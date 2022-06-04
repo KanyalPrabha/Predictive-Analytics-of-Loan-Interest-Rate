@@ -1,0 +1,280 @@
+---
+title: "Predictive Modeling of the Interest rate charged by Lending club"
+Medthods Used : "MLR, MARS, Polynomial Regression"
+
+---
+
+```{r packages}
+
+packs = c('dplyr','ggplot2','AppliedPredictiveModeling', 'caret','corrplot', 'e1071','reshape2','RANN','moments','glmnet','car','GGally', 'earth','shiny')
+lapply(packs,require,character.only=TRUE)
+
+```
+
+# data preparation 
+
+```{r prepare data; address missing values}
+
+setwd("/Users/prabhakanyal/desktop/STAT656/project")
+data = read.csv('LoanStats3a0410-2.csv')
+
+names(data)
+class(data)
+str(data)
+anyNA(data)
+summary(data)
+nrow(data)
+ncol(data)
+
+ggplot_missing <- function(data){
+	data %>% 
+    is.na %>%
+    melt %>%
+    ggplot(data = .,
+           aes(x = Var2,
+               y = Var1)) +
+    geom_raster(aes(fill = value)) +
+    scale_fill_grey(name = "",
+                    labels = c("Present","Missing")) +
+    theme_minimal() + 
+    theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + 
+    labs(x = "Variables in Dataset",
+         y = "Rows / observations")
+}
+ggplot_missing(data)
+
+data[data == ""] <- NA
+#sum(data$emp_length == "n/a")
+
+dataNew = data %>% filter(emp_length != "n/a") 
+
+nrow(dataNew)
+summary(dataNew)
+
+anyNA(dataNew)
+
+modeImpute = function(Xqual){
+  tbl   = table(Xqual)
+  Xqual[is.na(Xqual)] = names(tbl)[which.max(tbl)]
+  return(Xqual)
+}
+
+dataNewImputeMode = dataNew %>% mutate(term = modeImpute(term), grade = modeImpute(grade), home_ownership = modeImpute(home_ownership), purpose = modeImpute(purpose), addr_state = modeImpute(addr_state))
+
+anyNA(dataNewImputeMode)
+
+dataNewImputeModeMedian = dataNewImputeMode %>% preProcess(method='medianImpute', k=5) %>% predict(dataNewImputeMode)
+
+anyNA(dataNewImputeModeMedian)
+
+dataNewImputeModeMedian <- na.omit(dataNewImputeModeMedian)
+
+anyNA(dataNewImputeModeMedian)
+
+summary(dataNewImputeModeMedian)
+str(dataNewImputeModeMedian)
+
+X = select(dataNewImputeModeMedian,-int_rate)
+Y = dataNewImputeModeMedian$int_rate
+
+head(X, n=3)
+dim(X)
+str(X)
+class(X)
+
+head(Y, n=3)
+length(Y)
+Y <- gsub("%$","",Y)
+Y <- as.numeric(Y)
+str(Y)
+class(Y)
+
+(n = nrow(X))
+(p = ncol(X))
+
+```
+
+coerce qualitative variables into dummy variables
+
+```{r conversion into dummy variables}
+
+X["emp_length"][X["emp_length"] == "10+ years"] <- 10
+X["emp_length"][X["emp_length"] == "< 1 year"] <- 0.5
+X["emp_length"][X["emp_length"] == "1 year"] <- 1
+X["emp_length"][X["emp_length"] == "2 years"] <- 2
+X["emp_length"][X["emp_length"] == "3 years"] <- 3
+X["emp_length"][X["emp_length"] == "4 years"] <- 4
+X["emp_length"][X["emp_length"] == "5 years"] <- 5
+X["emp_length"][X["emp_length"] == "6 years"] <- 6
+X["emp_length"][X["emp_length"] == "7 years"] <- 7
+X["emp_length"][X["emp_length"] == "8 years"] <- 8
+X["emp_length"][X["emp_length"] == "9 years"] <- 9
+
+X$revol_util <- gsub("%$","",X$revol_util)
+
+X$revol_util <- as.numeric(X$revol_util)
+class(X$emp_length)
+class(X$revol_util)
+
+str(X)
+
+Xqual = X%>%select(term, home_ownership, purpose, addr_state)%>%mutate_all(factor)
+str(Xqual)
+
+Xquan = X%>%select(-c(term, grade, home_ownership, purpose, addr_state))%>% mutate_all(as.numeric)
+
+str(Xquan)
+
+dummyModel = dummyVars(~ ., data = Xqual, fullRank = TRUE)
+XqualDummy = predict(dummyModel, Xqual)
+
+```
+
+assess for extreme obs, skewness, transformation and PCA 
+
+```{r exploratory analysis}
+
+skewed = apply(Xquan,2,skewness)
+skewed
+
+XquanYeoJ = Xquan %>% select_if(abs(skewed)> 1.5) %>% preProcess(method = 'YeoJohnson') %>% predict(newdata = Xquan)
+
+pcaOut = prcomp(XquanYeoJ, scale=TRUE, center=TRUE)
+XquanYeoJscores = data.frame(pcaOut$x)
+
+ggplot(data = XquanYeoJscores) + 
+  geom_point(aes(x = PC1, y = PC2)) + 
+  coord_cartesian(xlim = range(XquanYeoJscores$PC1), ylim = range(XquanYeoJscores$PC1))
+
+```
+
+correlation assessment 
+
+```{r exploratory analysis}
+
+corrplot(cor(XquanYeoJ), order = "hclust", tl.cex = .35)
+highCorr = XquanYeoJ %>% cor %>% findCorrelation(0.80, names=TRUE)
+
+#pairs(XquanYeoJ)
+#ggpairs(XquanYeoJ)
+
+XquanYeoJfilter = select(XquanYeoJ,-any_of(highCorr))
+
+corrplot(cor(XquanYeoJfilter), order = "hclust", tl.cex = .35)
+
+```
+
+data split: train, validation, test 
+
+```{r split the data}
+
+Xfull = cbind(XquanYeoJfilter,XqualDummy)
+head(Xfull)
+
+
+trainIndex = createDataPartition(Y, p=0.5, list = FALSE) %>% as.vector(.)
+length(trainIndex)
+head(trainIndex)
+
+validSplit = createDataPartition(Y[-trainIndex], p=0.5, list = FALSE) %>% as.vector(.)
+testIndex = (1:n)[-trainIndex][-validSplit]
+length(testIndex)
+head(testIndex)
+
+validIndex = (1:n)[-trainIndex][validSplit]
+length(validIndex)
+head(validIndex)
+
+Xtrain = Xfull[trainIndex,]
+Ytrain = Y[trainIndex]
+
+Xvalid = Xfull[trainIndex,]
+Yvalid = Y[trainIndex]
+
+Xtest = Xfull[-trainIndex,]
+Ytest = Y[-trainIndex]
+
+```
+
+MLR residuals 
+
+```{r plot residuals }
+
+trControl = trainControl(method ='none')
+lmOut     = train(x = Xfull, y = Y, method = "lm",trControl = trControl)
+
+Yhat      = predict(lmOut, newdata = Xfull)
+residuals = Y - Yhat
+residualPlotData = data.frame(residuals, Yhat)
+ggplot(data = residualPlotData) + 
+    geom_point(aes(x = Yhat, y = residuals)) + 
+    geom_hline(yintercept = 0, color = 'red')
+
+
+```
+
+MARS model
+
+```{r MARS}
+
+marsData <- cbind(Y,Xfull)
+marsOut = earth(Y ~ ., data = marsData)
+print(marsOut)
+(sumOut = summary(marsOut))
+plot(marsOut, which=c(3,4))
+
+```
+
+2nd degree model
+
+```{r 2nd degree model}
+
+Xfull <- as.matrix(Xfull)
+class(Xfull)
+dim(Xfull)
+length(Y)
+polyOut = lm(Y ~ Xfull + I(Xfull^2))
+(sumOut = summary(polyOut))
+plot(polyOut)
+
+```
+
+regression model 
+
+```{r fit MLR model, compute errors }
+
+trControl = trainControl(method ='none')
+lmOut     = train(x = Xtrain, y = Ytrain, method = "lm",trControl = trControl)
+(trainingError = mean(lmOut$residuals**2))
+summary(lmOut$finalModel)
+
+YhatValid   = predict(lmOut, newdata = Xvalid)
+(validError = mean( (YhatValid - Yvalid)**2 ))
+                    
+
+YhatTest = predict(lmOut, newdata = Xtest)
+(testError = mean( (YhatTest - Ytest)**2 ))
+
+```
+
+penalized model 
+
+```{r fit Elastic Net and compute error}
+
+set.seed(1)
+K            = 20
+trainControl = trainControl(method = "cv", number = K)
+tuneGrid     = expand.grid('alpha'=c(0,.25,.5,.75,1),'lambda' = seq(1e-10, .04, length.out = 25))
+
+elasticOut = train(x = Xtrain, y = Ytrain,
+                   method = "glmnet", 
+                   trControl = trainControl, tuneGrid = tuneGrid)
+
+plot(elasticOut, xlab="Penalty", ylab='k-fold CV')
+
+YhatTest = predict(elasticOut, Xtest)
+
+(testErrorNet = mean((YhatTest - Ytest)**2))
+
+```
+

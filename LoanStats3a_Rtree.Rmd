@@ -1,0 +1,275 @@
+---
+title: "Predictive Modeling of the Interest rate charged by Lending club"
+Medthods Used : "Regression tree, Random Forest, Bagging"
+Predictive modeling for the Interest rate charged by the lending club and anlysis of the variables 
+that affect the Interest rate.
+output: html_document
+---
+
+```{r setup, include=FALSE}
+packs = c('dplyr','ggplot2','AppliedPredictiveModeling', 'caret','corrplot', 'e1071','reshape2','RANN','moments','glmnet','car','GGally', 'earth','shiny')
+lapply(packs,require,character.only=TRUE)
+
+```
+
+## R Markdown
+Here let's look at the summary of the data and the missing values of the data using a ggplot.
+
+```{r }
+setwd("/Users/prabhakanyal/desktop/STAT656/project")
+data = read.csv('LoanStats3a0410-2.csv')
+
+names(data)
+class(data)
+str(data)
+anyNA(data)
+summary(data)
+nrow(data)
+ncol(data)
+
+ggplot_missing <- function(data){
+	data %>% 
+    is.na %>%
+    melt %>%
+    ggplot(data = .,
+           aes(x = Var2,
+               y = Var1)) +
+    geom_raster(aes(fill = value)) +
+    scale_fill_grey(name = "",
+                    labels = c("Present","Missing")) +
+    theme_minimal() + 
+    theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + 
+    labs(x = "Variables in Dataset",
+         y = "Rows / observations")
+}
+ggplot_missing(data)
+
+data[data == ""] <- NA
+#sum(data$emp_length == "n/a")
+
+dataNew = data %>% filter(emp_length != "n/a") 
+
+nrow(dataNew)
+summary(dataNew)
+
+anyNA(dataNew)
+```
+
+The missing values in the dataset needs to be imputed. I have used mode impute for the qualitative variables and median impute for the quantitative variables.
+
+```{R }
+modeImpute = function(Xqual){
+  tbl   = table(Xqual)
+  Xqual[is.na(Xqual)] = names(tbl)[which.max(tbl)]
+  return(Xqual)
+}
+
+dataNewImputeMode = dataNew %>% mutate(term = modeImpute(term), grade = modeImpute(grade), home_ownership = modeImpute(home_ownership), purpose = modeImpute(purpose), addr_state = modeImpute(addr_state))
+
+anyNA(dataNewImputeMode)
+
+dataNewImputeModeMedian = dataNewImputeMode %>% preProcess(method='medianImpute', k=5) %>% predict(dataNewImputeMode)
+
+anyNA(dataNewImputeModeMedian)
+
+dataNewImputeModeMedian <- na.omit(dataNewImputeModeMedian)
+
+anyNA(dataNewImputeModeMedian)
+
+summary(dataNewImputeModeMedian)
+str(dataNewImputeModeMedian)
+```
+
+In the middle of the analysis, it is learnt that variables such as int_rate, grade , total_rec_int, and total_rec_prncp are the after results of the interest rate by lending club hence, removed the above variables.
+
+```{R}
+X = select(dataNewImputeModeMedian,-int_rate, -grade, -total_rec_int, - total_rec_prncp)
+Y = dataNewImputeModeMedian$int_rate
+
+head(X, n=3)
+dim(X)
+str(X)
+class(X)
+
+head(Y, n=3)
+length(Y)
+Y <- gsub("%$","",Y)
+Y <- as.numeric(Y)
+str(Y)
+class(Y)
+
+(n = nrow(X))
+(p = ncol(X))
+```
+Imputation using Random forest
+```{R}
+##NAdata <- select(data, -int_rate)
+#response <- select(data, !is.na(int_rate))
+#response <- na.omit(response)
+#XnewImp = rfImpute(NAdata, response)
+#anyNA(response)
+#First column is the supervisor vector
+#Xnew = XnewImp[,-1]
+
+```
+
+## Including Plots
+
+Below the noisy data is cleaned
+
+```{r }
+
+X["emp_length"][X["emp_length"] == "10+ years"] <- 10
+X["emp_length"][X["emp_length"] == "< 1 year"] <- 0.5
+X["emp_length"][X["emp_length"] == "1 year"] <- 1
+X["emp_length"][X["emp_length"] == "2 years"] <- 2
+X["emp_length"][X["emp_length"] == "3 years"] <- 3
+X["emp_length"][X["emp_length"] == "4 years"] <- 4
+X["emp_length"][X["emp_length"] == "5 years"] <- 5
+X["emp_length"][X["emp_length"] == "6 years"] <- 6
+X["emp_length"][X["emp_length"] == "7 years"] <- 7
+X["emp_length"][X["emp_length"] == "8 years"] <- 8
+X["emp_length"][X["emp_length"] == "9 years"] <- 9
+
+X$revol_util <- gsub("%$","",X$revol_util)
+
+X$revol_util <- as.numeric(X$revol_util)
+class(X$emp_length)
+class(X$revol_util)
+head(X)
+```
+Creating training data and test data
+Here, I did not assess for skewness, or multicollinearity as the MLR or MARS because the regression tree is known to handle this features very well.
+
+```{r split the data}
+set.seed(1)
+trainIndex = createDataPartition(Y, p=0.6, list = FALSE) %>% as.vector(.)
+length(trainIndex)
+head(trainIndex)
+
+validSplit = createDataPartition(Y[-trainIndex], p=0.5, list = FALSE) %>% as.vector(.)
+testIndex = (1:n)[-trainIndex][-validSplit]
+length(testIndex)
+head(testIndex)
+
+validIndex = (1:n)[-trainIndex][validSplit]
+length(validIndex)
+head(validIndex)
+
+Xtrain = X[trainIndex,]
+Ytrain = Y[trainIndex]
+
+Xvalid = X[trainIndex,]
+Yvalid = Y[trainIndex]
+
+Xtest = X[-trainIndex,]
+Ytest = Y[-trainIndex]
+
+```
+Regression Tree
+
+```{R}
+library(rpart)
+library(rpart.plot)
+DtreeData <- cbind(Xtrain, Ytrain)
+rpartOut <- rpart(Ytrain~., data = DtreeData,  method = 'anova')
+rpart.plot(rpartOut, box.palette="white")
+YhatTest_tree <- predict(rpartOut, Xtest)
+summary(rpartOut)
+head(DtreeData)
+
+YhatValidRtree   = predict(rpartOut, Xvalid)
+(validError = mean( (YhatValidRtree - Yvalid)**2 ))
+
+MSE_ = mean((YhatTest_tree - Ytest)**2)
+head(Ytrain)
+MSE_
+
+```
+
+
+```{R}
+set.seed(1)
+tuneGrid = data.frame('cp'=c(0,.001,.01,.1,.5,1))
+trainControl = trainControl(method = 'cv', number = 10)
+rpartOut1 = train(x = Xtrain, y = Ytrain,
+method = "rpart",
+tuneGrid = tuneGrid,
+trControl = trainControl)
+
+YhatValidRtree1   = predict(rpartOut1, Xvalid)
+(validError = mean( (YhatValidRtree1 - Yvalid)**2 ))
+
+YhatTest <- predict(rpartOut1, Xtest)
+MSE_tree = mean((YhatTest - Ytest)**2)
+MSE_tree
+
+plot(rpartOut1)
+
+
+```
+Random Forest
+```{R }
+set.seed(1)
+library(randomForest)
+tuneGrid = data.frame('cp'=c(0,.001,.01,.1,.5,1))
+trainControl = trainControl(method = 'cv', number = 10)
+rfOut = randomForest(x = Xtrain, y = Ytrain,
+tuneGrid = tuneGrid,
+trControl = trainControl)
+
+
+YhatValidRF   = predict(rfOut, Xvalid)
+(validError = mean( (YhatValidRF - Yvalid)**2 ))
+
+YhatTestRF <- predict(rfOut, Xtest)
+MSE_tree = mean((YhatTestRF - Ytest)**2)
+MSE_tree
+
+plot(rfOut)
+summary(rfOut)
+
+```
+
+Random Forest with cross validation which turns out giving the lowest MSE
+```{R}
+trainControl = trainControl(method = 'cv', number = 5)
+rfOut2 = randomForest(x = Xtrain, y = Ytrain,
+cp = 0.001,
+trControl = trainControl)
+
+YhatValidran   = predict(rfOut2, Xvalid)
+(validError = mean( (YhatValidran - Yvalid)**2 ))
+
+YhatTest2 <- predict(rfOut2, Xtest)
+MSE_tree2 = mean((YhatTest2 - Ytest)**2)
+MSE_tree2
+plot(varImpPlot(rfOut2))
+varImpPlot(rfOut2)
+```
+
+Here Bagging with cross validation:
+```{R}
+ctrl <- trainControl(method = "cv",  number = 10) 
+
+baggedCV <- train(
+Ytrain~.,
+data = DtreeData,
+method = "treebag",
+trControl = ctrl,
+importance = TRUE
+)
+YhatValidBag   = predict(baggedCV, Xvalid)
+(validError = mean( (YhatValidBag - Yvalid)**2 ))
+
+YhatTestBag <- predict(baggedCV, Xtest)
+MSE_Bag = mean((YhatTestBag - Ytest)**2)
+MSE_Bag
+
+summary(baggedCV)
+baggedCV
+
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
